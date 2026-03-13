@@ -1,12 +1,32 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from datetime import date
-from typing import List, Optional
+from typing import List
 import sqlite3
 
-app = FastAPI(title="API Solicitudes Demo")
+# Forzamos versión 3.0.0 para compatibilidad total con Power Automate
+app = FastAPI(title="API Solicitudes Demo", openapi_version="3.0.0")
 
-# Modelo para recibir datos
+def get_db():
+    conn = sqlite3.connect("solicitudes.db")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    # Esta línea asegura que la tabla exista cada vez que se use la API
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS solicitudes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            identificacion TEXT,
+            nombre TEXT,
+            lider TEXT,
+            fecha_inicio TEXT,
+            fecha_fin TEXT,
+            total_dias INTEGER,
+            estado TEXT
+        )
+    """)
+    conn.commit()
+    return conn
+
 class Solicitud(BaseModel):
     identificacion: str
     nombre: str
@@ -15,66 +35,58 @@ class Solicitud(BaseModel):
     fecha_fin: date
     estado: str = "Pendiente"
 
-# Modelo para devolver datos (incluye el ID y el cálculo)
-class SolicitudOut(Solicitud):
-    id: int
-    total_dias: int
+# 1. LISTAR TODO
+@app.get("/solicitudes/")
+def listar_solicitudes():
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM solicitudes").fetchall()
+        return [dict(row) for row in rows]
 
-def get_db_connection():
-    conn = sqlite3.connect("solicitudes.db")
-    conn.row_factory = sqlite3.Row
-    return conn
-
-# 1. CREATE: Crear una solicitud
-@app.post("/solicitudes/", response_model=dict)
+# 2. CREAR
+@app.post("/solicitudes/")
 def crear_solicitud(s: Solicitud):
     total_dias = (s.fecha_fin - s.fecha_inicio).days
-    with get_db_connection() as conn:
+    with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO solicitudes (identificacion, nombre, lider, fecha_inicio, fecha_fin, total_dias, estado)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (s.identificacion, s.nombre, s.lider, str(s.fecha_inicio), str(s.fecha_fin), total_dias, s.estado))
-        return {"message": "Creado", "id": cursor.lastrowid}
+        conn.commit()
+        return {"message": "Creado con éxito", "id": cursor.lastrowid}
 
-# 2. READ: Ver todas las solicitudes
-@app.get("/solicitudes/", response_model=List[SolicitudOut])
-def listar_solicitudes():
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        rows = cursor.execute("SELECT * FROM solicitudes").fetchall()
-        return [dict(row) for row in rows]
-
-# 3. READ: Ver una sola solicitud por ID
-@app.get("/solicitudes/{solicitud_id}", response_model=SolicitudOut)
+# 3. OBTENER UNA SOLICITUD (Por ID)
+@app.get("/solicitudes/{solicitud_id}")
 def obtener_solicitud(solicitud_id: int):
-    with get_db_connection() as conn:
+    with get_db() as conn:
         row = conn.execute("SELECT * FROM solicitudes WHERE id = ?", (solicitud_id,)).fetchone()
         if not row:
-            raise HTTPException(status_code=404, detail="No encontrada")
+            raise HTTPException(status_code=404, detail="Solicitud no encontrada")
         return dict(row)
 
-# 4. UPDATE: Actualizar estado o datos
+# 4. ACTUALIZAR (Para aprobar/rechazar en la demo)
 @app.put("/solicitudes/{solicitud_id}")
 def actualizar_solicitud(solicitud_id: int, s: Solicitud):
     total_dias = (s.fecha_fin - s.fecha_inicio).days
-    with get_db_connection() as conn:
+    with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE solicitudes 
             SET identificacion=?, nombre=?, lider=?, fecha_inicio=?, fecha_fin=?, total_dias=?, estado=?
             WHERE id = ?
         """, (s.identificacion, s.nombre, s.lider, str(s.fecha_inicio), str(s.fecha_fin), total_dias, s.estado, solicitud_id))
+        conn.commit()
         if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="No encontrada")
-        return {"message": "Actualizada correctamente"}
+            raise HTTPException(status_code=404, detail="No se encontró para actualizar")
+        return {"message": "Actualizado con éxito"}
 
-# 5. DELETE: Borrar solicitud
+# 5. ELIMINAR
 @app.delete("/solicitudes/{solicitud_id}")
 def eliminar_solicitud(solicitud_id: int):
-    with get_db_connection() as conn:
+    with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM solicitudes WHERE id = ?", (solicitud_id,))
+        conn.commit()
         if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="No encontrada")
-        return {"message": "Eliminada"}
+            raise HTTPException(status_code=404, detail="No se encontró para eliminar")
+        return {"message": "Eliminado con éxito"}
